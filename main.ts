@@ -9,6 +9,17 @@ import {
 	Setting,
 } from "obsidian";
 import { PGlite, IdbFs } from "@electric-sql/pglite";
+// Yes, this is importing directly from node_modules. Yes, this is cursed.
+// No, we don't have a better solution because:
+// 1. The files aren't in package.json "exports"
+// 2. The library needs them but won't expose them
+// 3. Everything is terrible
+// @ts-ignore
+import wasmModule from "./node_modules/@electric-sql/pglite/dist/postgres.wasm";
+// @ts-ignore
+import fsBundle from "./node_modules/@electric-sql/pglite/dist/postgres.data";
+// @ts-ignore
+import vectorURL from "./node_modules/@electric-sql/pglite/dist/vector.tar.gz";
 
 // Remember to rename these classes and interfaces!
 interface MyPluginSettings {
@@ -19,50 +30,22 @@ const DEFAULT_SETTINGS: MyPluginSettings = {
 	mySetting: "default",
 };
 
-async function downloadPGWasm(): Promise<WebAssembly.Module | null> {
-	let wasmModule: WebAssembly.Module | null = null;
-	const response = await fetch(
-		"https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.12/dist/postgres.wasm",
-	);
-	console.log("WASM response status:", response.status);
-	console.log("WASM response size:", response.headers.get("content-length"));
-	wasmModule = await WebAssembly.compileStreaming(response);
-	return wasmModule;
-}
-
-async function getFsBundle() {
-	const response = await fetch(
-		"https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.12/dist/postgres.data",
-	);
-	console.log("FS response status:", response.status);
-	console.log("FS response size:", response.headers.get("content-length"));
-	const buffer = await response.arrayBuffer();
-	console.log("Actual FS buffer size:", buffer.byteLength);
-	return buffer;
-}
-
 export default class SemanticSearchPlugin extends Plugin {
 	settings: MyPluginSettings;
 	db: PGlite | null = null;
 
 	async onload() {
 		await this.loadSettings();
-		// Convert base64 to binary
-		// Create the module
-		const wasmModule = await downloadPGWasm();
+		const compiledWasm = await wasmModule;
 		if (wasmModule === null) {
 			throw "Could not download WASM from jsdelivr";
 		}
 
-		const fsData = await getFsBundle();
-
 		const db = new PGlite({
-			wasmModule,
-			fsBundle: new Blob([new Uint8Array(fsData)]),
+			wasmModule: compiledWasm,
+			fsBundle: new Blob([fsBundle]),
 			extensions: {
-				vector: new URL(
-					"https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.12/dist/vector.tar.gz",
-				),
+				vector: vectorURL,
 			},
 		});
 		this.db = db;
@@ -77,7 +60,7 @@ export default class SemanticSearchPlugin extends Plugin {
 		// Restore process
 		// @ts-ignore
 		window.process = originalProcess;
-		console.log("Node loaded");
+		console.log("Vector extension loaded");
 		await db.exec(`
 		  CREATE TABLE IF NOT EXISTS test (
 		    id SERIAL PRIMARY KEY,
