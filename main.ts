@@ -41,7 +41,7 @@ async function getFsBundle() {
 	return buffer;
 }
 
-export default class MyPlugin extends Plugin {
+export default class SemanticSearchPlugin extends Plugin {
 	settings: MyPluginSettings;
 	db: PGlite | null = null;
 
@@ -55,28 +55,51 @@ export default class MyPlugin extends Plugin {
 		}
 
 		const fsData = await getFsBundle();
-		// Corrupt some bytes but keep the length same
-		// const corruptData = fsData.slice(0);
-		// new Uint8Array(corruptData).set([0xff, 0xff, 0xff], 0); // corrupt first few bytes
-		// const emptyBuffer = new ArrayBuffer(0);
 
 		const db = new PGlite({
 			wasmModule,
 			fsBundle: new Blob([new Uint8Array(fsData)]),
-			debug: 5,
+			extensions: {
+				vector: new URL(
+					"https://cdn.jsdelivr.net/npm/@electric-sql/pglite@0.2.12/dist/vector.tar.gz",
+				),
+			},
 		});
 		this.db = db;
 		console.log("DB instance created");
-		try {
-			console.log("About to exec version query");
-			await this.db.exec(`SELECT version();`);
-			console.log("Query completed");
-		} catch (e) {
-			console.error("Query failed:", e);
-			// Let's see if we can get more info about the error
-			console.error("Error properties:", Object.getOwnPropertyNames(e));
-			throw e;
-		}
+		// Dirty hack to initialize extensions:
+		// PGLite checks that we're in node using the window prop: https://github.com/electric-sql/pglite/blob/ad83951c4d4ecb696bff01ab9c07a48580633232/packages/pglite/src/utils.ts#L6
+		// if it does, it tries importing FS to load the bundle, which will crash the extension due to Electron security: https://github.com/electric-sql/pglite/blob/ad83951c4d4ecb696bff01ab9c07a48580633232/packages/pglite/src/extensionUtils.ts#L10
+		const originalProcess = window.process;
+		// @ts-ignore
+		window.process = undefined;
+		await db.exec("CREATE EXTENSION IF NOT EXISTS vector;");
+		// Restore process
+		// @ts-ignore
+		window.process = originalProcess;
+		console.log("Node loaded");
+		await db.exec(`
+		  CREATE TABLE IF NOT EXISTS test (
+		    id SERIAL PRIMARY KEY,
+		    name TEXT,
+		    vec vector(3)
+		  );
+		`);
+		await db.exec(
+			"INSERT INTO test (name, vec) VALUES ('test1', '[1,2,3]');",
+		);
+		await db.exec(
+			"INSERT INTO test (name, vec) VALUES ('test2', '[4,5,6]');",
+		);
+		await db.exec(
+			"INSERT INTO test (name, vec) VALUES ('test3', '[7,8,9]');",
+		);
+
+		const res = await db.exec(`
+  SELECT * FROM test;
+`);
+		console.log(res);
+
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon(
 			"dice",
@@ -162,9 +185,9 @@ export default class MyPlugin extends Plugin {
 }
 
 class SampleModal extends SuggestModal<string> {
-	private plugin: MyPlugin;
+	private plugin: SemanticSearchPlugin;
 
-	constructor(plugin: MyPlugin) {
+	constructor(plugin: SemanticSearchPlugin) {
 		super(plugin.app);
 		this.plugin = plugin;
 	}
@@ -195,9 +218,9 @@ class SampleModal extends SuggestModal<string> {
 }
 
 class SampleSettingTab extends PluginSettingTab {
-	plugin: MyPlugin;
+	plugin: SemanticSearchPlugin;
 
-	constructor(app: App, plugin: MyPlugin) {
+	constructor(app: App, plugin: SemanticSearchPlugin) {
 		super(app, plugin);
 		this.plugin = plugin;
 	}
