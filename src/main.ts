@@ -1,87 +1,33 @@
+import { Editor, MarkdownView, SuggestModal, Notice, Plugin } from "obsidian";
+import { DatabaseManager } from "./db";
 import {
-	App,
-	Editor,
-	MarkdownView,
-	SuggestModal,
-	Notice,
-	Plugin,
-	PluginSettingTab,
-	Setting,
-} from "obsidian";
-import { PGlite, IdbFs } from "@electric-sql/pglite";
-// Yes, this is importing directly from node_modules. Yes, this is cursed.
-// No, we don't have a better solution because:
-// 1. The files aren't in package.json "exports"
-// 2. The library needs them but won't expose them
-// 3. Everything is terrible
-// @ts-ignore
-import wasmModule from "./node_modules/@electric-sql/pglite/dist/postgres.wasm";
-// @ts-ignore
-import fsBundle from "./node_modules/@electric-sql/pglite/dist/postgres.data";
-// @ts-ignore
-import vectorURL from "./node_modules/@electric-sql/pglite/dist/vector.tar.gz";
-
-// Remember to rename these classes and interfaces!
-interface MyPluginSettings {
-	mySetting: string;
-}
-
-const DEFAULT_SETTINGS: MyPluginSettings = {
-	mySetting: "default",
-};
+	SemanticSearchPluginSettings,
+	SemanticSearchSettingTab,
+	DEFAULT_SETTINGS,
+} from "./settings";
 
 export default class SemanticSearchPlugin extends Plugin {
-	settings: MyPluginSettings;
-	db: PGlite | null = null;
+	settings: SemanticSearchPluginSettings;
+	dbManager = new DatabaseManager();
 
 	async onload() {
 		await this.loadSettings();
-		const compiledWasm = await wasmModule;
-		if (wasmModule === null) {
-			throw "Could not download WASM from jsdelivr";
+		await this.dbManager.initialize();
+		if (this.dbManager.db !== null) {
+			await this.dbManager.db.exec(
+				"INSERT INTO test (name, vec) VALUES ('test1', '[1,2,3]');",
+			);
+			await this.dbManager.db.exec(
+				"INSERT INTO test (name, vec) VALUES ('test2', '[4,5,6]');",
+			);
+			await this.dbManager.db.exec(
+				"INSERT INTO test (name, vec) VALUES ('test3', '[7,8,9]');",
+			);
+			const res = await this.dbManager.db.exec(`
+			  SELECT * FROM test;
+			`);
+			console.log(res);
 		}
-
-		const db = new PGlite({
-			wasmModule: compiledWasm,
-			fsBundle: new Blob([fsBundle]),
-			extensions: {
-				vector: vectorURL,
-			},
-		});
-		this.db = db;
-		console.log("DB instance created");
-		// Dirty hack to initialize extensions:
-		// PGLite checks that we're in node using the window prop: https://github.com/electric-sql/pglite/blob/ad83951c4d4ecb696bff01ab9c07a48580633232/packages/pglite/src/utils.ts#L6
-		// if it does, it tries importing FS to load the bundle, which will crash the extension due to Electron security: https://github.com/electric-sql/pglite/blob/ad83951c4d4ecb696bff01ab9c07a48580633232/packages/pglite/src/extensionUtils.ts#L10
-		const originalProcess = window.process;
-		// @ts-ignore
-		window.process = undefined;
-		await db.exec("CREATE EXTENSION IF NOT EXISTS vector;");
-		// Restore process
-		// @ts-ignore
-		window.process = originalProcess;
-		console.log("Vector extension loaded");
-		await db.exec(`
-		  CREATE TABLE IF NOT EXISTS test (
-		    id SERIAL PRIMARY KEY,
-		    name TEXT,
-		    vec vector(3)
-		  );
-		`);
-		await db.exec(
-			"INSERT INTO test (name, vec) VALUES ('test1', '[1,2,3]');",
-		);
-		await db.exec(
-			"INSERT INTO test (name, vec) VALUES ('test2', '[4,5,6]');",
-		);
-		await db.exec(
-			"INSERT INTO test (name, vec) VALUES ('test3', '[7,8,9]');",
-		);
-
-		const res = await db.exec(`
-  SELECT * FROM test;
-`);
-		console.log(res);
 
 		// This creates an icon in the left ribbon.
 		const ribbonIconEl = this.addRibbonIcon(
@@ -138,7 +84,7 @@ export default class SemanticSearchPlugin extends Plugin {
 		});
 
 		// This adds a settings tab so the user can configure various aspects of the plugin
-		this.addSettingTab(new SampleSettingTab(this.app, this));
+		this.addSettingTab(new SemanticSearchSettingTab(this.app, this));
 
 		// If the plugin hooks up any global DOM events (on parts of the app that doesn't belong to this plugin)
 		// Using this function will automatically remove the event listener when this plugin is disabled.
@@ -165,6 +111,10 @@ export default class SemanticSearchPlugin extends Plugin {
 	async saveSettings() {
 		await this.saveData(this.settings);
 	}
+
+	async clearDB() {
+		await this.dbManager.dropAllTables();
+	}
 }
 
 class SampleModal extends SuggestModal<string> {
@@ -177,8 +127,8 @@ class SampleModal extends SuggestModal<string> {
 
 	async getSuggestions(query: string): Promise<string[]> {
 		const { contentEl } = this;
-		if (this.plugin.db !== null) {
-			const ret = await this.plugin.db.query(`
+		if (this.plugin.dbManager.db !== null) {
+			const ret = await this.plugin.dbManager.db.query(`
 			  SELECT * from todo WHERE id = 1;
 			`);
 			console.log(ret.rows);
@@ -197,33 +147,5 @@ class SampleModal extends SuggestModal<string> {
 
 	onChooseSuggestion(item: string, evt: MouseEvent | KeyboardEvent): void {
 		console.log(`chose ${item}`);
-	}
-}
-
-class SampleSettingTab extends PluginSettingTab {
-	plugin: SemanticSearchPlugin;
-
-	constructor(app: App, plugin: SemanticSearchPlugin) {
-		super(app, plugin);
-		this.plugin = plugin;
-	}
-
-	display(): void {
-		const { containerEl } = this;
-
-		containerEl.empty();
-
-		new Setting(containerEl)
-			.setName("Setting #1")
-			.setDesc("It's a secret")
-			.addText((text) =>
-				text
-					.setPlaceholder("Enter your secret")
-					.setValue(this.plugin.settings.mySetting)
-					.onChange(async (value) => {
-						this.plugin.settings.mySetting = value;
-						await this.plugin.saveSettings();
-					}),
-			);
 	}
 }
